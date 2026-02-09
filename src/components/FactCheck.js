@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import n8nService from '../services/n8nService';
+import EpicLoader from './EpicLoader';
 import './Landing.css';
 
 const FactCheck = () => {
@@ -8,28 +9,134 @@ const FactCheck = () => {
   const [inputType, setInputType] = useState('url');
   const [loading, setLoading] = useState(false);
   const [showContent, setShowContent] = useState(false);
+  const [validationStatus, setValidationStatus] = useState('');
+  const [progress, setProgress] = useState(0);
+  const [particles, setParticles] = useState([]);
+  const [dragOver, setDragOver] = useState(false);
   const navigate = useNavigate();
+  const fileInputRef = useRef(null);
+  const progressInterval = useRef(null);
 
   useEffect(() => {
     setTimeout(() => setShowContent(true), 300);
+    
+    // Generate particles for background
+    const generateParticles = () => {
+      const newParticles = [];
+      for (let i = 0; i < 15; i++) {
+        newParticles.push({
+          id: i,
+          x: Math.random() * 100,
+          y: Math.random() * 100,
+          size: Math.random() * 4 + 2,
+          speedX: (Math.random() - 0.5) * 0.3,
+          speedY: (Math.random() - 0.5) * 0.3,
+          opacity: Math.random() * 0.4 + 0.2,
+        });
+      }
+      setParticles(newParticles);
+    };
+    
+    generateParticles();
+    
+    // Static particles - no animation
+    return () => {};
   }, []);
+  
+  // Real-time input validation
+  useEffect(() => {
+    if (!(typeof input === 'string' ? input.trim() : input) && inputType !== 'image') {
+      setValidationStatus('');
+      return;
+    }
+    
+    if (inputType === 'url') {
+      try {
+        new URL(input);
+        setValidationStatus('valid');
+      } catch {
+        setValidationStatus('invalid');
+      }
+    } else if (inputType === 'text') {
+      if (input.length < 10) {
+        setValidationStatus('too-short');
+      } else if (input.length > 5000) {
+        setValidationStatus('too-long');
+      } else {
+        setValidationStatus('valid');
+      }
+    }
+  }, [input, inputType]);
+
+  const simulateProgress = () => {
+    setProgress(0);
+    progressInterval.current = setInterval(() => {
+      setProgress(prev => {
+        if (prev >= 90) {
+          clearInterval(progressInterval.current);
+          return 90;
+        }
+        return prev + Math.random() * 15;
+      });
+    }, 200);
+  };
+  
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setDragOver(true);
+  };
+  
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+  };
+  
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    const files = e.dataTransfer.files;
+    if (files.length > 0 && files[0].type.startsWith('image/')) {
+      setInputType('image');
+      setInput(files[0]);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!(typeof input === 'string' ? input.trim() : input) && inputType !== 'image') return;
+    if (inputType === 'image' && !input) return;
+    if (validationStatus === 'invalid' || validationStatus === 'too-short' || validationStatus === 'too-long') return;
 
     setLoading(true);
+    simulateProgress();
 
     try {
-      // Mock API call - replace with actual Google Fact Check API
-      const response = await axios.post('/api/fact-check', {
-        query: input,
-        type: inputType
-      });
+      // Prepare data for n8n workflow
+      let factCheckData = {
+        inputType,
+        timestamp: new Date().toISOString()
+      };
 
-      const result = response.data; // Assume result has truthfulness data
+      if (inputType === 'url') {
+        factCheckData.url = input;
+        factCheckData.title = 'URL Verification';
+        factCheckData.content = input;
+      } else if (inputType === 'text') {
+        factCheckData.title = 'Text Verification';
+        factCheckData.content = input;
+        factCheckData.text = input;
+      } else if (inputType === 'image') {
+        factCheckData.title = 'Image Verification';
+        factCheckData.content = `Image file: ${input?.name || 'uploaded image'}`;
+      }
 
-      navigate('/result', { state: { result, input, inputType } });
+      // Call n8n workflow
+      const result = await n8nService.factCheck(factCheckData);
+      try {
+        navigate('/result', { state: { result, input, inputType } });
+      } catch (error) {
+        window.location.href = '/result';
+      }
     } catch (error) {
       console.error('Error checking fact:', error);
       // Analyze content based on input type and generate specific sources
@@ -132,14 +239,54 @@ const FactCheck = () => {
       }
       
       const mockResult = { isTrue, confidence, sources };
-      navigate('/result', { state: { result: mockResult, input, inputType } });
+      try {
+        navigate('/result', { state: { result: mockResult, input, inputType } });
+      } catch (error) {
+        window.location.href = '/result';
+      }
     } finally {
-      setLoading(false);
+      setProgress(100);
+      setTimeout(() => {
+        setLoading(false);
+        setProgress(0);
+        clearInterval(progressInterval.current);
+      }, 500);
+    }
+  };
+  
+  const getValidationMessage = () => {
+    switch (validationStatus) {
+      case 'invalid':
+        return 'Please enter a valid URL';
+      case 'too-short':
+        return 'Text must be at least 10 characters';
+      case 'too-long':
+        return 'Text must be less than 5000 characters';
+      case 'valid':
+        return 'Ready to verify!';
+      default:
+        return '';
+    }
+  };
+  
+  const getValidationColor = () => {
+    switch (validationStatus) {
+      case 'invalid':
+      case 'too-short':
+      case 'too-long':
+        return '#ff6b6b';
+      case 'valid':
+        return '#4ecdc4';
+      default:
+        return 'transparent';
     }
   };
 
   return (
-    <div className="landing">
+    <div className="landing" onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
+      {loading && <EpicLoader message="Verifying Information..." progress={progress} />}
+
+      
       <div className="background-video-container">
         <video
           autoPlay
@@ -151,6 +298,23 @@ const FactCheck = () => {
           <source src="/mixkit-fire-background-with-flames-moving-to-the-centre-3757-full-hd.mp4" type="video/mp4" />
           Your browser does not support the video tag.
         </video>
+      </div>
+      
+      {/* Floating particles */}
+      <div className="floating-particles">
+        {particles.map((particle) => (
+          <div
+            key={particle.id}
+            className="particle"
+            style={{
+              left: `${particle.x}%`,
+              top: `${particle.y}%`,
+              width: `${particle.size}px`,
+              height: `${particle.size}px`,
+              opacity: particle.opacity,
+            }}
+          />
+        ))}
       </div>
       
       {showContent && (
@@ -185,6 +349,22 @@ const FactCheck = () => {
           {/* Scrollable Right Side */}
           <div className="right-panel">
             <div className="right-content">
+              <div style={{ display: 'flex', alignItems: 'center', marginBottom: '2rem' }}>
+                <button
+                  onClick={(e) => {
+                    e.preventDefault();
+                    try {
+                      navigate('/');
+                    } catch (error) {
+                      window.location.href = '/';
+                    }
+                  }}
+                  className="back-btn"
+                >
+                  ← Back to Home
+                </button>
+              </div>
+              
               <div className="content-section visible">
                 <h2>Choose Your Verification Method</h2>
                 <p>Select how you want to verify your information and get instant results.</p>
@@ -229,7 +409,24 @@ const FactCheck = () => {
                           onChange={(e) => setInput(e.target.value)}
                           required
                           className="modern-input"
+                          style={{
+                            borderColor: getValidationColor(),
+                            animation: 'slideInFromBottom 0.5s ease-out'
+                          }}
                         />
+                        {validationStatus && (
+                          <div 
+                            className="validation-message"
+                            style={{ 
+                              color: getValidationColor(),
+                              marginTop: '0.5rem',
+                              fontSize: '0.9rem',
+                              animation: 'fadeIn 0.3s ease-out'
+                            }}
+                          >
+                            {getValidationMessage()}
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -242,14 +439,49 @@ const FactCheck = () => {
                           required
                           className="modern-textarea"
                           rows="6"
+                          style={{
+                            borderColor: getValidationColor(),
+                            animation: 'slideInFromBottom 0.5s ease-out'
+                          }}
                         />
+                        <div className="char-counter" style={{ 
+                          textAlign: 'right', 
+                          marginTop: '0.5rem',
+                          fontSize: '0.8rem',
+                          opacity: 0.7,
+                          color: input.length > 4500 ? '#ff6b6b' : '#ffffff'
+                        }}>
+                          {input.length}/5000 characters
+                        </div>
+                        {validationStatus && (
+                          <div 
+                            className="validation-message"
+                            style={{ 
+                              color: getValidationColor(),
+                              marginTop: '0.5rem',
+                              fontSize: '0.9rem',
+                              animation: 'fadeIn 0.3s ease-out'
+                            }}
+                          >
+                            {getValidationMessage()}
+                          </div>
+                        )}
                       </div>
                     )}
 
                     {inputType === 'image' && (
                       <div className="input-wrapper">
-                        <div className="file-upload-area">
+                        <div 
+                          className={`file-upload-area ${dragOver ? 'drag-over' : ''}`}
+                          style={{
+                            animation: 'slideInFromBottom 0.5s ease-out',
+                            borderColor: dragOver ? '#ff6b6b' : 'rgba(255, 255, 255, 0.3)',
+                            backgroundColor: dragOver ? 'rgba(255, 107, 107, 0.1)' : 'rgba(255, 255, 255, 0.02)',
+                            transform: dragOver ? 'scale(1.02)' : 'scale(1)'
+                          }}
+                        >
                           <input
+                            ref={fileInputRef}
                             type="file"
                             accept="image/*"
                             onChange={(e) => setInput(e.target.files[0])}
@@ -258,19 +490,42 @@ const FactCheck = () => {
                             id="file-upload"
                           />
                           <label htmlFor="file-upload" className="file-upload-label">
-                            <div className="upload-icon">📁</div>
+                            <div className="upload-icon" style={{ 
+                              fontSize: dragOver ? '4rem' : '3rem',
+                              transition: 'all 0.3s ease'
+                            }}>📁</div>
                             <div className="upload-text">
-                              <strong>Click to upload</strong> or drag and drop
+                              <strong>{dragOver ? 'Drop here!' : 'Click to upload'}</strong> {!dragOver && 'or drag and drop'}
                               <br />
                               <small>PNG, JPG, GIF up to 10MB</small>
                             </div>
                           </label>
+                          {input && (
+                            <div className="file-preview" style={{
+                              marginTop: '1rem',
+                              padding: '0.5rem',
+                              background: 'rgba(255, 255, 255, 0.1)',
+                              borderRadius: '8px',
+                              animation: 'fadeIn 0.3s ease-out'
+                            }}>
+                              📎 {input.name} ({(input.size / 1024 / 1024).toFixed(2)} MB)
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
                   </div>
 
-                  <button type="submit" disabled={loading} className="check-fact-btn">
+                  <button 
+                    type="submit" 
+                    disabled={loading || (validationStatus && validationStatus !== 'valid')} 
+                    className="check-fact-btn"
+                    style={{
+                      animation: 'slideInFromBottom 0.6s ease-out 0.3s both',
+                      opacity: (validationStatus && validationStatus !== 'valid') ? 0.5 : 1,
+                      transform: loading ? 'scale(0.98)' : 'scale(1)'
+                    }}
+                  >
                     {loading ? (
                       <>
                         <div className="spinner"></div>
@@ -283,6 +538,23 @@ const FactCheck = () => {
                       </>
                     )}
                   </button>
+                  
+                  {/* Quick tips */}
+                  <div className="quick-tips" style={{
+                    marginTop: '2rem',
+                    padding: '1.5rem',
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    borderRadius: '15px',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    animation: 'fadeIn 1s ease-out 0.5s both'
+                  }}>
+                    <h4 style={{ margin: '0 0 1rem', color: '#ff6b6b' }}>💡 Quick Tips</h4>
+                    <ul style={{ margin: 0, paddingLeft: '1.2rem', opacity: 0.8 }}>
+                      <li>For URLs: Make sure the link is accessible and from a news source</li>
+                      <li>For Text: Paste the complete claim or article excerpt</li>
+                      <li>For Images: Upload clear screenshots of social media posts or articles</li>
+                    </ul>
+                  </div>
                 </form>
               </div>
             </div>
